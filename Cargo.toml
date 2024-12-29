@@ -14,6 +14,7 @@ panic-probe = { version = "0.3", features = ["print-defmt"] }
 
 # BSP for the board we're using
 pimoroni-plasma-2040 = "0.7.0"
+microfft = "0.6.0"
 
 # cargo build/run
 [profile.dev]

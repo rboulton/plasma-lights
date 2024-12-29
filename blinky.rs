@@ -57,8 +57,10 @@ fn main() -> ! {
     let mut adc_pin_0 = AdcPin::new(pins.adc0.into_floating_input()).unwrap();
     // adc.free_running(&adc_pin_0);
 
-    const len: usize = 1024;
-    let buf_for_samples = singleton!(: [u16; len] = [0; len]).unwrap();
+    const chunklen: usize = 1024;
+    let buf_for_samples = singleton!(: [u16; chunklen] = [0; chunklen]).unwrap();
+    let buf_for_fft = singleton!(: [f32; chunklen] = [0.; chunklen]).unwrap();
+    let buf_for_fft_normed = singleton!(: [f32; chunklen / 2] = [0.0; chunklen / 2]).unwrap();
     let mut adc_fifo = adc.build_fifo()
         .clock_divider(999, 0) // (48MHz / 48ksps) - 1 = 999 
         .set_channel(&mut adc_pin_0)
@@ -73,20 +75,46 @@ fn main() -> ! {
     //let mut led_blue = pins.led_blue.into_push_pull_output_in_state(PinState::High);
 
     loop {
+        // Should really do the transfer triggered by an interrupt
         let (ch, adc_read_target, buf_for_samples) = dma_transfer.wait();
         let mut min: u16 = 65535;
         let mut max: u16 = 0;
         let mut total: u32 = 0;
-        for i in 0..len {
+        for i in 0..chunklen {
             if buf_for_samples[i] < min { min = buf_for_samples[i] }
             if buf_for_samples[i] > max { max = buf_for_samples[i] }
             total += u32::from(buf_for_samples[i]);
             // defmt::println!("D {}", buf_for_samples[i]);
         }
+        let avg: f32 = total as f32 / 1024.0;
+        // defmt::println!("min:{} max:{} avg:{} range:{}", min, max, avg, max - min);
+
+        for i in 0..chunklen {
+            buf_for_fft[i] = (buf_for_samples[i] as f32 - avg) / 4096.0;
+        }
+        let spectrum = microfft::real::rfft_1024(buf_for_fft);
+        for i in 0..chunklen / 2 {
+            buf_for_fft_normed[i] = spectrum[i].norm_sqr();
+        }
+        let mut max_i: usize = 0;
+        let mut max_val: f32 = 0.;
+        for i in 0..chunklen / 2 {
+            if buf_for_fft[i] > max_val {
+                max_val = buf_for_fft[i];
+                max_i = i;
+            }
+        }
+        defmt::println!("max {} {}", max_i, max_val);
+
+        //for i in 0..40 {
+        //    defmt::println!("F {} {}", i, buf_for_fft[i]);
+        //}
+        // defmt::println!("");
+
+        // Start next transfer
         dma_transfer = single_buffer::Config::new(
             ch, adc_read_target, buf_for_samples
         ).start();
-        defmt::println!("min:{} max:{} avg:{} range:{}", min, max, total / 1024, max - min);
 
         // let pin_adc_counts: u16 = adc.read(&mut adc_pin_0).unwrap();
         //led_green.set_low().unwrap();
