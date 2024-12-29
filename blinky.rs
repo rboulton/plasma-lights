@@ -27,27 +27,45 @@ use bsp::hal::{
 use smart_leds::{brightness, SmartLedsWrite, RGB8};
 use ws2812_pio::Ws2812;
 
+use cichlid::{HSV, ColorRGB, GradientDirection, prelude::*};
+
 const STRIP_LEN: usize = 50;
 const CHUNKLEN: usize = 1024;
 
 fn fade(rgb: &mut RGB8) {
     if rgb.r > 0 {
         rgb.r = rgb.r - 1;
-        rgb.r = rgb.r - rgb.r / 4;
+        rgb.r = rgb.r - rgb.r / 8;
     }
     if rgb.g > 0 {
         rgb.g = rgb.g - 1;
-        rgb.g = rgb.g - rgb.g / 4;
+        rgb.g = rgb.g - rgb.g / 8;
     }
     if rgb.b > 0 {
         rgb.b = rgb.b - 1;
-        rgb.b = rgb.b - rgb.b / 4;
+        rgb.b = rgb.b - rgb.b / 8;
     }
 }
 
 #[entry]
 fn main() -> ! {
     info!("Program start");
+
+    let mut palette_tmp = [ColorRGB::Black; 256];
+
+    let start_hue: u8 = 0;
+    let hue_delta: u16 = (1 << 8);
+
+    palette_tmp.rainbow_fill(start_hue, hue_delta); // From step size
+    palette_tmp.rainbow_fill_single_cycle(start_hue); // Complete rainbow
+                                                  //
+    let mut palette: [RGB8; 256] = [(0, 0, 0).into(); 256];
+    for i in 0..256 {
+        palette[i].r = palette_tmp[i].r;
+        palette[i].g = palette_tmp[i].g;
+        palette[i].b = palette_tmp[i].b;
+    }
+
 
     let mut pac = pac::Peripherals::take().unwrap();
     let core = pac::CorePeripherals::take().unwrap();
@@ -109,9 +127,9 @@ fn main() -> ! {
     let mut leds: [RGB8; STRIP_LEN] = [(0, 0, 0).into(); STRIP_LEN];
     let strip_brightness = 64u8;
 
-    let mut colour: u16 = 0;
+    let mut colour: usize = 0;
     loop {
-        colour = (colour + 1) % (256*3);
+        colour = (colour + 5) % 256;
         // Should really do the transfer triggered by an interrupt
         let (ch, adc_read_target, buf_for_samples) = dma_transfer.wait();
         let mut min: u16 = 65535;
@@ -156,9 +174,9 @@ fn main() -> ! {
         for i in 0..STRIP_LEN {
             let signal = buf_for_fft[i] / max_val;
             if max_val > 0.03 && signal > 0.1 {
-                leds[i].r = (255.0 * signal) as u8;
-                leds[i].g = 0;
-                leds[i].b = 0;
+                leds[i].r = (palette[colour].r as f32 * signal) as u8;
+                leds[i].g = (palette[colour].g as f32 * signal) as u8;
+                leds[i].b = (palette[colour].b as f32 * signal) as u8;
             } else {
                 fade(&mut leds[i]);
             }
