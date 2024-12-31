@@ -125,7 +125,7 @@ fn main() -> ! {
     //let mut led_blue = pins.led_blue.into_push_pull_output_in_state(PinState::High);
 
     let mut leds: [RGB8; STRIP_LEN] = [(0, 0, 0).into(); STRIP_LEN];
-    let strip_brightness = 64u8;
+    let strip_brightness = 255u8;
 
     let mut colour: usize = 0;
     loop {
@@ -142,7 +142,7 @@ fn main() -> ! {
             // defmt::println!("D {}", buf_for_samples[i]);
         }
         let avg: f32 = total as f32 / CHUNKLEN as f32;
-        // defmt::println!("min:{} max:{} avg:{} range:{}", min, max, avg, max - min);
+        defmt::println!("min:{} max:{} avg:{} range:{}", min, max, avg, max - min);
 
         for i in 0..CHUNKLEN {
             buf_for_fft[i] = (buf_for_samples[i] as f32 - avg) / 4096.0;
@@ -153,13 +153,12 @@ fn main() -> ! {
         }
         let mut max_i: usize = 0;
         let mut max_val: f32 = 0.;
-        for i in 0..CHUNKLEN / 2 {
+        for i in 0..CHUNKLEN / 4 {
             if buf_for_fft[i] > max_val {
                 max_val = buf_for_fft[i];
                 max_i = i;
             }
         }
-        defmt::println!("max {} {}", max_i, max_val);
 
         //for i in 0..40 {
         //    defmt::println!("F {} {}", i, buf_for_fft[i]);
@@ -171,16 +170,23 @@ fn main() -> ! {
             ch, adc_read_target, buf_for_samples
         ).start();
 
+        let mut increased: i32 = 0;
+        colour = (max_i * 2) % 256;
         for i in 0..STRIP_LEN {
             let signal = buf_for_fft[i] / max_val;
-            if max_val > 0.03 && signal > 0.1 {
-                leds[i].r = (palette[colour].r as f32 * signal) as u8;
-                leds[i].g = (palette[colour].g as f32 * signal) as u8;
-                leds[i].b = (palette[colour].b as f32 * signal) as u8;
+            if max_val > 0.5 && signal > 0.5 {
+                let r = (palette[colour].r as f32 * signal) as u8;
+                let g = (palette[colour].g as f32 * signal) as u8;
+                let b = (palette[colour].b as f32 * signal) as u8;
+                if leds[i].r < r { leds[i].r = r }
+                if leds[i].g < g { leds[i].g = g }
+                if leds[i].b < b { leds[i].b = b }
+                increased += 1;
             } else {
                 fade(&mut leds[i]);
             }
         }
+        defmt::println!("max {:03} {:03} - increased {}", max_i, (max_val * 1000.0) as u16, increased);
 
         ws.write(brightness(leds.iter().copied(), strip_brightness)).unwrap();
     }
