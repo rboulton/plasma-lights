@@ -372,6 +372,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "panic-halt"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a513e167849a384b7f9b746e517604398518590a9142f4846a32e3c2a4de7b11"
+
+[[package]]
 name = "panic-probe"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -388,17 +394,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
-name = "pimoroni-plasma-2040"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf91d4368e74e50460bdff26ce7f3d4958a0b791a8a4188d33ce07f635af6780"
-dependencies = [
- "cortex-m-rt",
- "rp2040-boot2",
- "rp2040-hal",
-]
-
-[[package]]
 name = "pio"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -407,23 +402,6 @@ dependencies = [
  "arrayvec",
  "num_enum",
  "paste",
-]
-
-[[package]]
-name = "plasma-lights"
-version = "0.1.0"
-dependencies = [
- "cichlid",
- "cortex-m",
- "cortex-m-rt",
- "defmt 0.3.100",
- "defmt-rtt",
- "embedded-hal 1.0.0",
- "microfft",
- "panic-probe",
- "pimoroni-plasma-2040",
- "smart-leds",
- "ws2812-pio",
 ]
 
 [[package]]
@@ -488,6 +466,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-pico"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9342d3ac7011ac688300979e9b52a81f0add1d05feb02868cf94bfee0705b28"
+dependencies = [
+ "cortex-m-rt",
+ "fugit",
+ "rp2040-boot2",
+ "rp2040-hal",
+ "usb-device",
+]
+
+[[package]]
 name = "rp2040-boot2"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -535,6 +526,25 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "rp2040-lights-buttons-and-mic"
+version = "0.1.0"
+dependencies = [
+ "cichlid",
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt 0.3.100",
+ "defmt-rtt",
+ "embedded-hal 0.2.7",
+ "embedded-hal 1.0.0",
+ "microfft",
+ "panic-halt",
+ "panic-probe",
+ "rp-pico",
+ "smart-leds",
+ "ws2812-pio",
 ]
 
 [[package]]

@@ -1,79 +1,94 @@
+//! # Pico WS2812 RGB LED Example
+//!
+//! Drives 3 WS2812 LEDs connected directly to the Raspberry Pi Pico.
+//! This assumes you drive the Raspberry Pi Pico via USB power, so that VBUS
+//! delivers the 5V and at least enough amperes to drive the LEDs.
+//!
+//! For a more large scale and longer strips you should use an extra power
+//! supply for the LED strip (or know what you are doing ;-) ).
+//!
+//! The example also comes with an utility function to calculate the colors
+//! from HSV color space. It also limits the brightness a bit to save a
+//! few milliamperes - be careful if you increase the strip length you will
+//! quickly get into power consumption of multiple amperes.
+//!
+//! The example assumes you connected the data input to pin 6 of the
+//! Raspberry Pi Pico, which is GPIO4 of the rp2040. Here is a circuit
+//! diagram that shows the assumed setup:
+//!
+//! ```text
+//!  _______________      /----------------------\
+//! |+5V  /---\  +5V|----/         _|USB|_       |
+//! |DO <-|LED|<- DI|-\           |1  R 40|-VBUS-/
+//! |GND  \---/  GND|--+---\      |2  P 39|
+//!  """""""""""""""   |    \-GND-|3    38|
+//!                    |          |4  P 37|
+//!                    |          |5  I 36|
+//!                    \------GP4-|6  C   |
+//!                               |7  O   |
+//!                               |       |
+//!                               .........
+//!                               |20   21|
+//!                                """""""
+//! Symbols:
+//!     - (+) crossing lines, not connected
+//!     - (o) connected lines
+//! ```
+//!
+//! See the `Cargo.toml` file for Copyright and license details.
+
 #![no_std]
 #![no_main]
 
-use bsp::entry;
-use defmt::*;
-use defmt_rtt as _;
-use embedded_hal::digital::OutputPin;
-use panic_probe as _;
+// The macro for our start-up function
+use rp_pico::entry;
 
-use pimoroni_plasma_2040 as bsp;
-use cortex_m::singleton;
+// Ensure we halt the program on panic (if we don't mention this crate it won't
+// be linked)
+use panic_halt as _;
 
-use bsp::hal::{
-    adc::Adc,
-    adc::AdcPin,
-    dma::single_buffer,
-    dma::DMAExt,
-    clocks::{init_clocks_and_plls, Clock},
-    gpio::PinState,
-    pio::PIOExt,
-    pac,
-    sio::Sio,
-    timer::Timer,
-    watchdog::Watchdog,
-};
+// Pull in any important traits
+use rp_pico::hal::prelude::*;
 
+// A shorter alias for the Peripheral Access Crate, which provides low-level
+// register access
+use rp_pico::hal::pac;
+
+// Import the Timer for Ws2812:
+use rp_pico::hal::timer::Timer;
+
+// A shorter alias for the Hardware Abstraction Layer, which provides
+// higher-level drivers.
+use rp_pico::hal;
+
+// PIOExt for the split() method that is needed to bring
+// PIO0 into useable form for Ws2812:
+use rp_pico::hal::pio::PIOExt;
+
+// Import useful traits to handle the ws2812 LEDs:
 use smart_leds::{brightness, SmartLedsWrite, RGB8};
+
+// Import the actual crate to handle the Ws2812 protocol:
 use ws2812_pio::Ws2812;
 
-use cichlid::{HSV, ColorRGB, GradientDirection, prelude::*};
-
+// Currently 3 consecutive LEDs are driven by this example
+// to keep the power draw compatible with USB:
 const STRIP_LEN: usize = 50;
-const CHUNKLEN: usize = 1024;
-
-fn fade(rgb: &mut RGB8) {
-    if rgb.r > 0 {
-        rgb.r = rgb.r - 1;
-        rgb.r = rgb.r - rgb.r / 8;
-    }
-    if rgb.g > 0 {
-        rgb.g = rgb.g - 1;
-        rgb.g = rgb.g - rgb.g / 8;
-    }
-    if rgb.b > 0 {
-        rgb.b = rgb.b - 1;
-        rgb.b = rgb.b - rgb.b / 8;
-    }
-}
 
 #[entry]
 fn main() -> ! {
-    info!("Program start");
-
-    let mut palette_tmp = [ColorRGB::Black; 256];
-
-    let start_hue: u8 = 0;
-    let hue_delta: u16 = (1 << 8);
-
-    palette_tmp.rainbow_fill(start_hue, hue_delta); // From step size
-    palette_tmp.rainbow_fill_single_cycle(start_hue); // Complete rainbow
-                                                  //
-    let mut palette: [RGB8; 256] = [(0, 0, 0).into(); 256];
-    for i in 0..256 {
-        palette[i].r = palette_tmp[i].r;
-        palette[i].g = palette_tmp[i].g;
-        palette[i].b = palette_tmp[i].b;
-    }
-
-
+    // Grab our singleton objects
     let mut pac = pac::Peripherals::take().unwrap();
     let core = pac::CorePeripherals::take().unwrap();
-    let mut watchdog = Watchdog::new(pac.WATCHDOG);
-    let sio = Sio::new(pac.SIO);
 
-    let clocks = init_clocks_and_plls(
-        bsp::XOSC_CRYSTAL_FREQ,
+    // Set up the watchdog driver - needed by the clock setup code
+    let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
+
+    // Configure the clocks
+    //
+    // The default is to generate a 125 MHz system clock
+    let clocks = hal::clocks::init_clocks_and_plls(
+        rp_pico::XOSC_CRYSTAL_FREQ,
         pac.XOSC,
         pac.CLOCKS,
         pac.PLL_SYS,
@@ -84,112 +99,121 @@ fn main() -> ! {
     .ok()
     .unwrap();
 
+    // The single-cycle I/O block controls our GPIO pins
+    let sio = hal::Sio::new(pac.SIO);
 
-    let pins = bsp::Pins::new(
+    // Set the pins up according to their function on this particular board
+    let pins = rp_pico::Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
         sio.gpio_bank0,
         &mut pac.RESETS,
     );
 
-    // Setup ws2812 leds
+    // Setup a delay for the LED blink signals:
+    let mut frame_delay =
+        cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
+
+    // Import the `sin` function for a smooth hue animation from the
+    // Pico rp2040 ROM:
+    let sin = hal::rom_data::float_funcs::fsin::ptr();
+
+    // Create a count down timer for the Ws2812 instance:
     let timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
+
+    // Split the PIO state machine 0 into individual objects, so that
+    // Ws2812 can use it:
     let (mut pio, sm0, _, _, _) = pac.PIO0.split(&mut pac.RESETS);
+
+    // Instanciate a Ws2812 LED strip:
     let mut ws = Ws2812::new(
-        pins.data.into_function(),
+        // Use pin 6 on the Raspberry Pi Pico (which is GPIO4 of the rp2040 chip)
+        // for the LED data output:
+        pins.gpio22.into_function(),
         &mut pio,
         sm0,
         clocks.peripheral_clock.freq(),
         timer.count_down(),
     );
 
-    let dma = pac.DMA.split(&mut pac.RESETS);
-    let mut adc = Adc::new(pac.ADC, &mut pac.RESETS);
-    let mut adc_pin_0 = AdcPin::new(pins.adc0.into_floating_input()).unwrap();
-    // adc.free_running(&adc_pin_0);
-
-    let buf_for_samples = singleton!(: [u16; CHUNKLEN] = [0; CHUNKLEN]).unwrap();
-    let buf_for_fft = singleton!(: [f32; CHUNKLEN] = [0.; CHUNKLEN]).unwrap();
-    let buf_for_fft_normed = singleton!(: [f32; CHUNKLEN / 2] = [0.0; CHUNKLEN / 2]).unwrap();
-    let mut adc_fifo = adc.build_fifo()
-        .clock_divider(999, 0) // (48MHz / 48ksps) - 1 = 999 
-        .set_channel(&mut adc_pin_0)
-        .enable_dma()
-        .start_paused();
-
-    let mut dma_transfer = single_buffer::Config::new(dma.ch0, adc_fifo.dma_read_target(), buf_for_samples).start();
-    adc_fifo.resume();
-
-    //let mut led_green = pins.led_green.into_push_pull_output_in_state(PinState::High);
-    //let mut led_red = pins.led_red.into_push_pull_output_in_state(PinState::High);
-    //let mut led_blue = pins.led_blue.into_push_pull_output_in_state(PinState::High);
-
     let mut leds: [RGB8; STRIP_LEN] = [(0, 0, 0).into(); STRIP_LEN];
-    let strip_brightness = 255u8;
+    let mut t = 0.0;
 
-    let mut colour: usize = 0;
+    // Bring down the overall brightness of the strip to not blow
+    // the USB power supply: every LED draws ~60mA, RGB means 3 LEDs per
+    // ws2812 LED, for 3 LEDs that would be: 3 * 3 * 60mA, which is
+    // already 540mA for just 3 white LEDs!
+    let strip_brightness = 64u8; // Limit brightness to 64/256
+
+    // Slow down timer by this factor (0.1 will result in 10 seconds):
+    let animation_speed = 0.1;
+
     loop {
-        colour = (colour + 5) % 256;
-        // Should really do the transfer triggered by an interrupt
-        let (ch, adc_read_target, buf_for_samples) = dma_transfer.wait();
-        let mut min: u16 = 65535;
-        let mut max: u16 = 0;
-        let mut total: u32 = 0;
-        for i in 0..CHUNKLEN {
-            if buf_for_samples[i] < min { min = buf_for_samples[i] }
-            if buf_for_samples[i] > max { max = buf_for_samples[i] }
-            total += u32::from(buf_for_samples[i]);
-            // defmt::println!("D {}", buf_for_samples[i]);
-        }
-        let avg: f32 = total as f32 / CHUNKLEN as f32;
-        defmt::println!("min:{} max:{} avg:{} range:{}", min, max, avg, max - min);
+        for (i, led) in leds.iter_mut().enumerate() {
+            // An offset to give 3 consecutive LEDs a different color:
+            let hue_offs = match i % 3 {
+                1 => 0.25,
+                2 => 0.5,
+                _ => 0.0,
+            };
 
-        for i in 0..CHUNKLEN {
-            buf_for_fft[i] = (buf_for_samples[i] as f32 - avg) / 4096.0;
-        }
-        let spectrum = microfft::real::rfft_1024(buf_for_fft);
-        for i in 0..CHUNKLEN / 2 {
-            buf_for_fft_normed[i] = spectrum[i].norm_sqr();
-        }
-        let mut max_i: usize = 0;
-        let mut max_val: f32 = 0.;
-        for i in 0..CHUNKLEN / 4 {
-            if buf_for_fft[i] > max_val {
-                max_val = buf_for_fft[i];
-                max_i = i;
-            }
+            let sin_11 = sin((t + hue_offs) * 2.0 * core::f32::consts::PI);
+            // Bring -1..1 sine range to 0..1 range:
+            let sin_01 = (sin_11 + 1.0) * 0.5;
+
+            let hue = 360.0 * sin_01;
+            let sat = 1.0;
+            let val = 1.0;
+
+            let rgb = hsv2rgb_u8(hue, sat, val);
+            *led = rgb.into();
         }
 
-        //for i in 0..40 {
-        //    defmt::println!("F {} {}", i, buf_for_fft[i]);
-        //}
-        // defmt::println!("");
+        // Here the magic happens and the `leds` buffer is written to the
+        // ws2812 LEDs:
+        ws.write(brightness(leds.iter().copied(), strip_brightness))
+            .unwrap();
 
-        // Start next transfer
-        dma_transfer = single_buffer::Config::new(
-            ch, adc_read_target, buf_for_samples
-        ).start();
+        // Wait a bit until calculating the next frame:
+        frame_delay.delay_ms(16); // ~60 FPS
 
-        let mut increased: i32 = 0;
-        colour = (max_i * 2) % 256;
-        for i in 0..STRIP_LEN {
-            let signal = buf_for_fft[i] / max_val;
-            if max_val > 0.5 && signal > 0.5 {
-                let r = (palette[colour].r as f32 * signal) as u8;
-                let g = (palette[colour].g as f32 * signal) as u8;
-                let b = (palette[colour].b as f32 * signal) as u8;
-                if leds[i].r < r { leds[i].r = r }
-                if leds[i].g < g { leds[i].g = g }
-                if leds[i].b < b { leds[i].b = b }
-                increased += 1;
-            } else {
-                fade(&mut leds[i]);
-            }
+        // Increase the time counter variable and make sure it
+        // stays inbetween 0.0 to 1.0 range:
+        t += (16.0 / 1000.0) * animation_speed;
+        while t > 1.0 {
+            t -= 1.0;
         }
-        defmt::println!("max {:03} {:03} - increased {}", max_i, (max_val * 1000.0) as u16, increased);
-
-        ws.write(brightness(leds.iter().copied(), strip_brightness)).unwrap();
     }
 }
 
-// End of file
+pub fn hsv2rgb(hue: f32, sat: f32, val: f32) -> (f32, f32, f32) {
+    let c = val * sat;
+    let v = (hue / 60.0) % 2.0 - 1.0;
+    let v = if v < 0.0 { -v } else { v };
+    let x = c * (1.0 - v);
+    let m = val - c;
+    let (r, g, b) = if hue < 60.0 {
+        (c, x, 0.0)
+    } else if hue < 120.0 {
+        (x, c, 0.0)
+    } else if hue < 180.0 {
+        (0.0, c, x)
+    } else if hue < 240.0 {
+        (0.0, x, c)
+    } else if hue < 300.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    (r + m, g + m, b + m)
+}
+
+pub fn hsv2rgb_u8(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
+    let r = hsv2rgb(h, s, v);
+
+    (
+        (r.0 * 255.0) as u8,
+        (r.1 * 255.0) as u8,
+        (r.2 * 255.0) as u8,
+    )
+}
